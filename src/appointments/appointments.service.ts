@@ -1,0 +1,151 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Appointment, AppointmentStatus } from './appointment.entity';
+import { Doctor } from '../doctors/doctor.entity';
+import { Patient } from '../patients/patient.entity';
+import { CreateAppointmentDto } from './dto/create-appointment.dto';
+import { MailService } from '../mail/mail.service';
+
+@Injectable()
+export class AppointmentsService {
+  constructor(
+    @InjectRepository(Appointment)
+    private appointmentRepository: Repository<Appointment>,
+    @InjectRepository(Doctor)
+    private doctorRepository: Repository<Doctor>,
+    @InjectRepository(Patient)
+    private patientRepository: Repository<Patient>,
+    private mailService: MailService,
+  ) {}
+
+  private toMinutes(time: string): number {
+    const [hours, minutes] = time.split(':').map(Number);
+    return hours * 60 + minutes;
+  }
+
+  private async getNextAvailableDates(
+    doctorId: number,
+    fromDate: string,
+    totalSlots: number,
+  ): Promise<string[]> {
+    const results: string[] = [];
+    const current = new Date(fromDate);
+
+    while (results.length < 3) {
+      current.setDate(current.getDate() + 1);
+      if (current.getDay() === 0) continue;
+
+      const dateStr = current.toISOString().split('T')[0];
+      const count = await this.appointmentRepository.count({
+        where: {
+          doctorId: doctorId,
+          appointmentDate: dateStr,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+
+      if (count < totalSlots) results.push(dateStr);
+    }
+
+    return results;
+  }
+
+  async bookAppointment(dto: CreateAppointmentDto) {
+    // Step 1 - Sunday check
+    const date = new Date(dto.date);
+    if (date.getDay() === 0) {
+      return { message: 'Appointments are not available on Sundays' };
+    }
+
+    // Step 2 - Fetch doctor
+    const doctor = await this.doctorRepository.findOne({
+      where: { doctor_id: dto.doctorId },
+    });
+    if (!doctor) {
+      return { message: 'Doctor not found' };
+    }
+
+    // Step 3 - Calculate total slots
+    const totalSlots =
+      (this.toMinutes(doctor.end_time) - this.toMinutes(doctor.start_time)) /
+      doctor.slot_duration;
+
+    // Step 4 - Count booked appointments for this date
+    const bookedCount = await this.appointmentRepository.count({
+      where: {
+        doctorId: dto.doctorId,
+        appointmentDate: dto.date,
+        status: AppointmentStatus.BOOKED,
+      },
+    });
+
+    // Step 5 - If fully booked, email patient and return next 3 dates
+    if (bookedCount >= totalSlots) {
+      const nextDates = await this.getNextAvailableDates(
+        dto.doctorId,
+        dto.date,
+        totalSlots,
+      );
+
+      const patient = await this.patientRepository.findOne({
+        where: { patient_id: dto.patientId },
+      });
+
+      if (patient) {
+        await this.mailService.sendRescheduleEmail(
+          patient.email,
+          patient.first_name,
+          nextDates,
+        );
+      }
+
+      return {
+        message: 'No slots available. Next available dates sent to your email.',
+        nextAvailableDates: nextDates,
+      };
+    }
+
+    // Step 6 - Find next available slot number
+    const bookedSlots = await this.appointmentRepository.find({
+      where: {
+        doctorId: dto.doctorId,
+        appointmentDate: dto.date,
+        status: AppointmentStatus.BOOKED,
+      },
+      select: ['slotNumber'],
+    });
+
+    const takenSlotNumbers = bookedSlots.map((a) => a.slotNumber);
+    let nextSlot = 1;
+    while (takenSlotNumbers.includes(nextSlot)) nextSlot++;
+
+    // Step 7 - Calculate reporting time
+    const startMinutes = this.toMinutes(doctor.start_time);
+    const reportingMinutes =
+      startMinutes + (nextSlot - 1) * doctor.slot_duration;
+    const hours = Math.floor(reportingMinutes / 60)
+      .toString()
+      .padStart(2, '0');
+    const mins = (reportingMinutes % 60).toString().padStart(2, '0');
+    const reportingTime = `${hours}:${mins}`;
+
+    // Step 8 - Save appointment
+    const appointment = this.appointmentRepository.create({
+      doctorId: dto.doctorId,
+      patientId: dto.patientId,
+      appointmentDate: dto.date,
+      slotNumber: nextSlot,
+      status: AppointmentStatus.BOOKED,
+    });
+
+    const saved = await this.appointmentRepository.save(appointment);
+
+    return {
+      message: 'Appointment booked successfully!',
+      token: nextSlot,
+      reportingTime,
+      appointment: saved,
+    };
+  }
+}
