@@ -5,10 +5,15 @@ import { AppointmentsModule } from './appointments/appointments.module';
 import { DoctorsModule } from './doctors/doctors.module';
 import { PatientsModule } from './patients/patients.module';
 import { AuthModule } from './auth/auth.module';
+import { DatabaseModule } from './database/database.module';
+import { Doctor } from './doctors/doctor.entity';
+import { Patient } from './patients/patient.entity';
+import { Appointment } from './appointments/appointment.entity';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    DatabaseModule,
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
@@ -19,7 +24,7 @@ import { AuthModule } from './auth/auth.module';
         password: configService.get('DB_PASSWORD'),
         database: configService.get('DB_NAME'),
         synchronize: true,
-        autoLoadEntities: true,
+        entities: [Doctor, Patient, Appointment],
       }),
       inject: [ConfigService],
     }),

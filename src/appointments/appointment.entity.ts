@@ -31,4 +31,13 @@ export class Appointment {
     default: AppointmentStatus.BOOKED,
   })
   status: AppointmentStatus;
+
+  @Column({ nullable: true })
+  patientPhone: string;
+
+  @Column({ nullable: true })
+  patientName: string;
+
+  @Column({ nullable: true })
+  reasonForVisit: string;
 }

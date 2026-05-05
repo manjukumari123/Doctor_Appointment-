@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Appointment, AppointmentStatus } from './appointment.entity';
@@ -187,6 +187,447 @@ export class AppointmentsService {
       token: nextSlot,
       reportingTime,
       appointment: saved,
+    };
+  }
+
+  async getAvailability(doctorId: number, date?: string) {
+    this.logger.log(`Getting availability for doctor ${doctorId}${date ? ` on ${date}` : ' for today'}`);
+    
+    // If no date provided, use today's date
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    
+    // Validate date is not Sunday
+    const dateObj = new Date(targetDate);
+    if (dateObj.getDay() === 0) {
+      this.logger.warn(`Availability check failed - Sunday not allowed: ${targetDate}`);
+      throw new BadRequestException('Appointments are not available on Sundays');
+    }
+
+    // Fetch doctor
+    this.logger.debug(`Fetching doctor with ID: ${doctorId}`);
+    const doctor = await this.doctorRepository.findOne({
+      where: { doctor_id: doctorId },
+    });
+    if (!doctor) {
+      this.logger.warn(`Availability check failed - Doctor not found: ${doctorId}`);
+      throw new BadRequestException('Doctor not found');
+    }
+
+    // Calculate total slots
+    const totalSlots = Math.floor(
+      (this.toMinutes(doctor.end_time) - this.toMinutes(doctor.start_time)) /
+      doctor.slot_duration
+    );
+    this.logger.debug(`Doctor ${doctorId} has ${totalSlots} total slots`);
+
+    // Count booked appointments
+    const bookedCount = await this.appointmentRepository.count({
+      where: {
+        doctorId: doctorId,
+        appointmentDate: targetDate,
+        status: AppointmentStatus.BOOKED,
+      },
+    });
+    this.logger.debug(`Found ${bookedCount} booked appointments for ${targetDate}`);
+
+    const availableSlots = totalSlots - bookedCount;
+
+    // Get all booked slots to determine which are available
+    const bookedSlots = await this.appointmentRepository.find({
+      where: {
+        doctorId: doctorId,
+        appointmentDate: targetDate,
+        status: AppointmentStatus.BOOKED,
+      },
+      select: ['slotNumber'],
+    });
+
+    const takenSlotNumbers = bookedSlots.map((a) => a.slotNumber);
+
+    // Generate all slots with availability status
+    const slots: Array<{ slotNumber: number; time: string; available: boolean }> = [];
+    for (let i = 1; i <= totalSlots; i++) {
+      const slotMinutes = this.toMinutes(doctor.start_time) + (i - 1) * doctor.slot_duration;
+      const hours = Math.floor(slotMinutes / 60).toString().padStart(2, '0');
+      const mins = (slotMinutes % 60).toString().padStart(2, '0');
+      
+      slots.push({
+        slotNumber: i,
+        time: `${hours}:${mins}`,
+        available: !takenSlotNumbers.includes(i),
+      });
+    }
+
+    this.logger.log(`Availability retrieved for doctor ${doctorId} on ${targetDate}: ${availableSlots}/${totalSlots} available`);
+
+    return {
+      doctorId: doctorId,
+      date: targetDate,
+      totalSlots: totalSlots,
+      bookedSlots: bookedCount,
+      availableSlots: availableSlots,
+      slots: slots,
+    };
+  }
+
+  async bookAppointmentWithSlot(dto: any) {
+    this.logger.log(`Booking appointment for doctor ${dto.doctorId}, phone: ${dto.patientPhone}, date: ${dto.date}, slot: ${dto.slotNumber}`);
+    
+    // Check for duplicate booking
+    this.logger.debug(`Checking for duplicate booking with phone: ${dto.patientPhone} on ${dto.date}`);
+    const existingAppointment = await this.appointmentRepository.findOne({
+      where: {
+        doctorId: dto.doctorId,
+        appointmentDate: dto.appointmentDate,
+        patientPhone: dto.patientPhone,
+        status: AppointmentStatus.BOOKED,
+      },
+    });
+
+    if (existingAppointment) {
+      this.logger.warn(`Duplicate booking attempt - phone ${dto.patientPhone} already has appointment on ${dto.appointmentDate}`);
+      throw new BadRequestException('You already have an appointment booked for this date. Please cancel the existing appointment first.');
+    }
+
+    // Validate date is not Sunday
+    const date = new Date(dto.appointmentDate);
+    if (date.getDay() === 0) {
+      this.logger.warn(`Booking failed - Sunday not allowed: ${dto.appointmentDate}`);
+      throw new BadRequestException('Appointments are not available on Sundays');
+    }
+
+    // Fetch doctor
+    const doctor = await this.doctorRepository.findOne({
+      where: { doctor_id: dto.doctorId },
+    });
+    if (!doctor) {
+      this.logger.warn(`Booking failed - Doctor not found: ${dto.doctorId}`);
+      throw new BadRequestException('Doctor not found');
+    }
+
+    // Calculate total slots
+    const totalSlots = Math.floor(
+      (this.toMinutes(doctor.end_time) - this.toMinutes(doctor.start_time)) /
+      doctor.slot_duration
+    );
+
+    // Validate slot number
+    if (dto.slotNumber < 1 || dto.slotNumber > totalSlots) {
+      this.logger.warn(`Booking failed - Invalid slot number: ${dto.slotNumber} (valid: 1-${totalSlots})`);
+      throw new BadRequestException(`Invalid slot number. Valid slots are 1 to ${totalSlots}`);
+    }
+
+    // Check if slot is already booked
+    const existingSlot = await this.appointmentRepository.findOne({
+      where: {
+        doctorId: dto.doctorId,
+        appointmentDate: dto.appointmentDate,
+        slotNumber: dto.slotNumber,
+        status: AppointmentStatus.BOOKED,
+      },
+    });
+
+    if (existingSlot) {
+      this.logger.warn(`Booking failed - Slot ${dto.slotNumber} already booked on ${dto.appointmentDate}`);
+      throw new BadRequestException('This slot is already booked. Please choose another slot.');
+    }
+
+    // Calculate reporting time
+    const startMinutes = this.toMinutes(doctor.start_time);
+    const reportingMinutes = startMinutes + (dto.slotNumber - 1) * doctor.slot_duration;
+    const hours = Math.floor(reportingMinutes / 60).toString().padStart(2, '0');
+    const mins = (reportingMinutes % 60).toString().padStart(2, '0');
+    const reportingTime = `${hours}:${mins}`;
+
+    // Save appointment
+    const appointment = this.appointmentRepository.create({
+      doctorId: dto.doctorId,
+      patientId: 0, // Will be updated based on patient lookup if needed
+      appointmentDate: dto.appointmentDate,
+      slotNumber: dto.slotNumber,
+      status: AppointmentStatus.BOOKED,
+      patientPhone: dto.patientPhone,
+      patientName: dto.patientName,
+      reasonForVisit: dto.reasonForVisit,
+    });
+
+    const saved = await this.appointmentRepository.save(appointment);
+
+    this.logger.log(`Appointment booked successfully - ID: ${saved.id}, Phone: ${dto.patientPhone}, Slot: ${dto.slotNumber}, Time: ${reportingTime}`);
+
+    return {
+      message: 'Appointment booked successfully',
+      tokenNumber: dto.slotNumber,
+      reportingTime: reportingTime,
+      appointmentDate: dto.appointmentDate,
+    };
+  }
+
+  async getNextAvailableDay(doctorId: number) {
+    this.logger.log(`Finding next available appointment day for doctor ${doctorId}`);
+    
+    // Fetch doctor
+    const doctor = await this.doctorRepository.findOne({
+      where: { doctor_id: doctorId },
+    });
+    if (!doctor) {
+      this.logger.warn(`Next available check failed - Doctor not found: ${doctorId}`);
+      throw new BadRequestException('Doctor not found');
+    }
+
+    const totalSlots = Math.floor(
+      (this.toMinutes(doctor.end_time) - this.toMinutes(doctor.start_time)) /
+      doctor.slot_duration
+    );
+
+    // Search for next 3 days
+    const current = new Date();
+    current.setDate(current.getDate() + 1); // Start from tomorrow
+
+    for (let day = 0; day < 3; day++) {
+      current.setDate(current.getDate() + 1);
+      
+      // Skip Sundays
+      if (current.getDay() === 0) {
+        this.logger.debug(`Skipping Sunday: ${current.toISOString().split('T')[0]}`);
+        continue;
+      }
+
+      const dateStr = current.toISOString().split('T')[0];
+      
+      // Check availability
+      const bookedCount = await this.appointmentRepository.count({
+        where: {
+          doctorId: doctorId,
+          appointmentDate: dateStr,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+
+      if (bookedCount < totalSlots) {
+        // Found available day, get available slots
+        const bookedSlots = await this.appointmentRepository.find({
+          where: {
+            doctorId: doctorId,
+            appointmentDate: dateStr,
+            status: AppointmentStatus.BOOKED,
+          },
+          select: ['slotNumber'],
+        });
+
+        const takenSlotNumbers = bookedSlots.map((a) => a.slotNumber);
+        const availableSlots: Array<{ slotNumber: number; time: string }> = [];
+
+        for (let i = 1; i <= totalSlots; i++) {
+          if (!takenSlotNumbers.includes(i)) {
+            const slotMinutes = this.toMinutes(doctor.start_time) + (i - 1) * doctor.slot_duration;
+            const hours = Math.floor(slotMinutes / 60).toString().padStart(2, '0');
+            const mins = (slotMinutes % 60).toString().padStart(2, '0');
+            
+            availableSlots.push({
+              slotNumber: i,
+              time: `${hours}:${mins}`,
+            });
+          }
+        }
+
+        this.logger.log(`Found next available day: ${dateStr} with ${availableSlots.length} slots`);
+        return {
+          message: `Next available appointment is on ${dateStr}`,
+          nextAvailableDate: dateStr,
+          availableSlots: availableSlots,
+        };
+      }
+    }
+
+    this.logger.warn(`No available slots found in next 3 days for doctor ${doctorId}`);
+    return {
+      message: 'No appointments available in the next 3 days. Please try after sometime',
+      nextAvailableDate: null,
+      availableSlots: [],
+    };
+  }
+
+  async cancelAppointment(dto: any) {
+    this.logger.log(`Attempting to cancel appointment - ID: ${dto.appointmentId}, Phone: ${dto.patientPhone}, Date: ${dto.appointmentDate}`);
+    
+    let appointment: Appointment | null = null;
+
+    // Cancel by appointment ID
+    if (dto.appointmentId) {
+      this.logger.debug(`Cancelling appointment by ID: ${dto.appointmentId}`);
+      appointment = await this.appointmentRepository.findOne({
+        where: { id: dto.appointmentId },
+      });
+      
+      if (!appointment) {
+        this.logger.warn(`Cancellation failed - Appointment not found with ID: ${dto.appointmentId}`);
+        throw new BadRequestException('Appointment not found');
+      }
+    }
+    // Cancel by patient phone and date
+    else if (dto.patientPhone && dto.appointmentDate) {
+      this.logger.debug(`Cancelling appointment by phone: ${dto.patientPhone} and date: ${dto.appointmentDate}`);
+      appointment = await this.appointmentRepository.findOne({
+        where: {
+          patientPhone: dto.patientPhone,
+          appointmentDate: dto.appointmentDate,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+      
+      if (!appointment) {
+        this.logger.warn(`Cancellation failed - No booked appointment found for phone: ${dto.patientPhone} on date: ${dto.appointmentDate}`);
+        throw new BadRequestException('No active appointment found for this phone number on the given date');
+      }
+    }
+    else {
+      this.logger.warn(`Cancellation failed - Invalid request parameters`);
+      throw new BadRequestException('Please provide either appointmentId or both patientPhone and appointmentDate');
+    }
+
+    // Check if already cancelled
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      this.logger.warn(`Cancellation failed - Appointment already cancelled - ID: ${appointment.id}`);
+      throw new BadRequestException('This appointment has already been cancelled');
+    }
+
+    this.logger.debug(`Cancelling appointment ID: ${appointment.id}`);
+    appointment.status = AppointmentStatus.CANCELLED;
+    
+    this.logger.debug(`Saving cancelled appointment to database`);
+    const cancelled = await this.appointmentRepository.save(appointment);
+    
+    this.logger.log(`Appointment cancelled successfully - ID: ${cancelled.id}, Doctor: ${cancelled.doctorId}, Date: ${cancelled.appointmentDate}, Slot: ${cancelled.slotNumber}`);
+    
+    return {
+      message: 'Appointment cancelled successfully',
+      appointment: cancelled,
+    };
+  }
+
+  async rescheduleAppointment(dto: any) {
+    this.logger.log(`Attempting to reschedule appointment - ID: ${dto.appointmentId}, Phone: ${dto.patientPhone}, Old Date: ${dto.oldAppointmentDate}, New Date: ${dto.newAppointmentDate}, New Slot: ${dto.newSlotNumber}`);
+    
+    let appointment: Appointment | null = null;
+
+    // Find existing appointment
+    if (dto.appointmentId) {
+      this.logger.debug(`Finding appointment by ID: ${dto.appointmentId}`);
+      appointment = await this.appointmentRepository.findOne({
+        where: { id: dto.appointmentId },
+      });
+      
+      if (!appointment) {
+        this.logger.warn(`Reschedule failed - Appointment not found with ID: ${dto.appointmentId}`);
+        throw new BadRequestException('Appointment not found');
+      }
+    }
+    else if (dto.patientPhone && dto.oldAppointmentDate) {
+      this.logger.debug(`Finding appointment by phone: ${dto.patientPhone} and date: ${dto.oldAppointmentDate}`);
+      appointment = await this.appointmentRepository.findOne({
+        where: {
+          patientPhone: dto.patientPhone,
+          appointmentDate: dto.oldAppointmentDate,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+      
+      if (!appointment) {
+        this.logger.warn(`Reschedule failed - No booked appointment found for phone: ${dto.patientPhone} on date: ${dto.oldAppointmentDate}`);
+        throw new BadRequestException('No active appointment found for this phone number on the given date');
+      }
+    }
+    else {
+      this.logger.warn(`Reschedule failed - Invalid request parameters`);
+      throw new BadRequestException('Please provide either appointmentId or both patientPhone and oldAppointmentDate');
+    }
+
+    // Check if already cancelled
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      this.logger.warn(`Reschedule failed - Appointment already cancelled - ID: ${appointment.id}`);
+      throw new BadRequestException('This appointment has already been cancelled and cannot be rescheduled');
+    }
+
+    // Store old appointment details
+    const oldAppointmentDetails = { ...appointment };
+
+    // Validate new date is not Sunday
+    const newDate = new Date(dto.newAppointmentDate);
+    if (newDate.getDay() === 0) {
+      this.logger.warn(`Reschedule failed - New date is Sunday: ${dto.newAppointmentDate}`);
+      throw new BadRequestException('Appointments are not available on Sundays');
+    }
+
+    // Fetch doctor
+    const doctor = await this.doctorRepository.findOne({
+      where: { doctor_id: appointment.doctorId },
+    });
+    if (!doctor) {
+      this.logger.warn(`Reschedule failed - Doctor not found: ${appointment.doctorId}`);
+      throw new BadRequestException('Doctor not found');
+    }
+
+    // Calculate total slots and validate new slot number
+    const totalSlots = Math.floor(
+      (this.toMinutes(doctor.end_time) - this.toMinutes(doctor.start_time)) /
+      doctor.slot_duration
+    );
+
+    if (dto.newSlotNumber < 1 || dto.newSlotNumber > totalSlots) {
+      this.logger.warn(`Reschedule failed - Invalid new slot number: ${dto.newSlotNumber} (valid: 1-${totalSlots})`);
+      throw new BadRequestException(`Invalid slot number. Valid slots are 1 to ${totalSlots}`);
+    }
+
+    // Check if new slot is already booked (excluding the current appointment)
+    const existingSlot = await this.appointmentRepository.findOne({
+      where: {
+        doctorId: appointment.doctorId,
+        appointmentDate: dto.newAppointmentDate,
+        slotNumber: dto.newSlotNumber,
+        status: AppointmentStatus.BOOKED,
+      },
+    });
+
+    if (existingSlot && existingSlot.id !== appointment.id) {
+      this.logger.warn(`Reschedule failed - New slot ${dto.newSlotNumber} already booked on ${dto.newAppointmentDate}`);
+      throw new BadRequestException('The requested time slot is already booked. Please choose another slot.');
+    }
+
+    // Cancel old appointment
+    this.logger.debug(`Cancelling old appointment ID: ${appointment.id}`);
+    appointment.status = AppointmentStatus.CANCELLED;
+    await this.appointmentRepository.save(appointment);
+
+    // Calculate reporting time for new slot
+    const startMinutes = this.toMinutes(doctor.start_time);
+    const reportingMinutes = startMinutes + (dto.newSlotNumber - 1) * doctor.slot_duration;
+    const hours = Math.floor(reportingMinutes / 60).toString().padStart(2, '0');
+    const mins = (reportingMinutes % 60).toString().padStart(2, '0');
+    const reportingTime = `${hours}:${mins}`;
+
+    // Create new appointment
+    this.logger.debug(`Creating new appointment with rescheduled details`);
+    const newAppointment = this.appointmentRepository.create({
+      doctorId: appointment.doctorId,
+      patientId: appointment.patientId,
+      appointmentDate: dto.newAppointmentDate,
+      slotNumber: dto.newSlotNumber,
+      status: AppointmentStatus.BOOKED,
+      patientPhone: appointment.patientPhone,
+      patientName: appointment.patientName,
+      reasonForVisit: appointment.reasonForVisit,
+    });
+
+    const saved = await this.appointmentRepository.save(newAppointment);
+
+    this.logger.log(`Appointment rescheduled successfully - Old ID: ${oldAppointmentDetails.id}, New ID: ${saved.id}, Old Date: ${oldAppointmentDetails.appointmentDate}, New Date: ${dto.newAppointmentDate}, New Slot: ${dto.newSlotNumber}, New Time: ${reportingTime}`);
+
+    return {
+      message: 'Appointment rescheduled successfully',
+      cancelledAppointment: oldAppointmentDetails,
+      newAppointment: saved,
+      newReportingTime: reportingTime,
     };
   }
 }
