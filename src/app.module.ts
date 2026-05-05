@@ -16,16 +16,34 @@ import { Appointment } from './appointments/appointment.entity';
     DatabaseModule,
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get('DB_HOST'),
-        port: +configService.get<number>('DB_PORT', 5432),
-        username: configService.get('DB_USERNAME'),
-        password: configService.get('DB_PASSWORD'),
-        database: configService.get('DB_NAME'),
-        synchronize: true,
-        entities: [Doctor, Patient, Appointment],
-      }),
+      useFactory: (configService: ConfigService) => {
+        const databaseUrl = configService.get('DATABASE_URL');
+        
+        // Use DATABASE_URL if available (production/external DB)
+        if (databaseUrl) {
+          return {
+            type: 'postgres',
+            url: databaseUrl,
+            ssl: {
+              rejectUnauthorized: false,
+            },
+            synchronize: true,
+            entities: [Doctor, Patient, Appointment],
+          };
+        }
+        
+        // Fallback to individual config variables (local development)
+        return {
+          type: 'postgres',
+          host: configService.get('DB_HOST'),
+          port: +configService.get<number>('DB_PORT', 5432),
+          username: configService.get('DB_USERNAME'),
+          password: configService.get('DB_PASSWORD'),
+          database: configService.get('DB_NAME'),
+          synchronize: true,
+          entities: [Doctor, Patient, Appointment],
+        };
+      },
       inject: [ConfigService],
     }),
     AppointmentsModule,
