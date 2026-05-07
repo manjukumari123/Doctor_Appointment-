@@ -18,6 +18,29 @@ export class DoctorsService {
     });
   }
 
+  async search(query: string) {
+    this.logger.log(`Searching doctors with query: ${query}`);
+    const doctors = await this.doctorRepository
+      .createQueryBuilder('doctor')
+      .where('doctor.specialty ILIKE :query', { query: `%${query}%` })
+      .orWhere('doctor.first_name ILIKE :query', { query: `%${query}%` })
+      .orWhere('doctor.last_name ILIKE :query', { query: `%${query}%` })
+      .select([
+        'doctor.doctor_id',
+        'doctor.first_name',
+        'doctor.last_name',
+        'doctor.specialty',
+        'doctor.email',
+        'doctor.start_time',
+        'doctor.end_time',
+        'doctor.slot_duration'
+      ])
+      .getMany();
+    
+    this.logger.log(`Found ${doctors.length} doctors matching query: ${query}`);
+    return doctors;
+  }
+
   async findOne(id: number) {
     const doctor = await this.doctorRepository.findOne({
       where: { doctor_id: id },

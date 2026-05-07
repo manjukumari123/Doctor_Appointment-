@@ -18,7 +18,7 @@ export class Doctor {
   email: string;
 
   @Column()
-  password: string; // ← this was missing
+  password: string;
 
   @Column({ type: 'time' })
   start_time: string;

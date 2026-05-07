@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Param, Body, Logger } from '@nestjs/common';
+import { Controller, Get, Put, Param, Body, Logger, Query } from '@nestjs/common';
 import { DoctorsService } from './doctors.service';
 import { UpdateDoctorDto } from './dto/update-doctor.dto';
 
@@ -11,6 +11,12 @@ export class DoctorsController {
   @Get()
   async findAll() {
     return this.doctorsService.findAll();
+  }
+
+  @Get('search')
+  async search(@Query('q') query: string) {
+    this.logger.log(`Received doctor search request with query: ${query}`);
+    return this.doctorsService.search(query);
   }
 
   @Get(':id')

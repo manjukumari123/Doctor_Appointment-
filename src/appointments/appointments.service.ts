@@ -630,4 +630,23 @@ export class AppointmentsService {
       newReportingTime: reportingTime,
     };
   }
+
+  async getAppointmentsByMobileNumber(mobileNumber: string, date?: string) {
+    this.logger.log(`Fetching appointments for mobile number: ${mobileNumber}${date ? ` on date: ${date}` : ''}`);
+    
+    const query = this.appointmentRepository.createQueryBuilder('appointment')
+      .where('appointment.patientPhone = :mobileNumber', { mobileNumber });
+    
+    if (date) {
+      query.andWhere('appointment.appointmentDate = :date', { date });
+    }
+    
+    const appointments = await query
+      .orderBy('appointment.appointmentDate', 'DESC')
+      .addOrderBy('appointment.slotNumber', 'ASC')
+      .getMany();
+    
+    this.logger.log(`Found ${appointments.length} appointments for mobile number: ${mobileNumber}`);
+    return appointments;
+  }
 }
