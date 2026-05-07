@@ -19,4 +19,7 @@ export class Patient {
 
   @Column()
   password: string;
+
+  @Column({ unique: true, nullable: true })
+  mobile_number: string;
 }

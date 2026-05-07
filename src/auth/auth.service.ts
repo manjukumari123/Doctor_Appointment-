@@ -27,13 +27,12 @@ export class AuthService {
   ) {}
 
   async signupDoctor(dto: SignupDoctorDto) {
-    this.logger.log(`Attempting doctor signup for email: ${dto.email}`);
-    
+    this.logger.log(`[Auth] Attempting doctor signup with email: ${dto.email}`);
     const exists = await this.doctorRepository.findOne({
       where: { email: dto.email },
     });
     if (exists) {
-      this.logger.warn(`Doctor signup failed - email already exists: ${dto.email}`);
+      this.logger.warn(`[Auth] Doctor email already registered: ${dto.email}`);
       throw new ConflictException('Email already registered');
     }
 
@@ -45,19 +44,17 @@ export class AuthService {
     
     this.logger.debug(`Saving doctor to database: ${dto.email}`);
     await this.doctorRepository.save(doctor);
-    
-    this.logger.log(`Doctor signup successful: ${dto.email}`);
+    this.logger.log(`[Auth] Doctor registered successfully with ID: ${doctor.doctor_id}`);
     return { message: 'Doctor registered successfully' };
   }
 
   async signupPatient(dto: SignupPatientDto) {
-    this.logger.log(`Attempting patient signup for email: ${dto.email}`);
-    
+    this.logger.log(`[Auth] Attempting patient signup with email: ${dto.email}`);
     const exists = await this.patientRepository.findOne({
       where: { email: dto.email },
     });
     if (exists) {
-      this.logger.warn(`Patient signup failed - email already exists: ${dto.email}`);
+      this.logger.warn(`[Auth] Patient email already registered: ${dto.email}`);
       throw new ConflictException('Email already registered');
     }
 
@@ -69,27 +66,24 @@ export class AuthService {
     
     this.logger.debug(`Saving patient to database: ${dto.email}`);
     await this.patientRepository.save(patient);
-    
-    this.logger.log(`Patient signup successful: ${dto.email}`);
+    this.logger.log(`[Auth] Patient registered successfully with ID: ${patient.patient_id}`);
     return { message: 'Patient registered successfully' };
   }
 
   async loginDoctor(dto: LoginDto) {
-    this.logger.log(`Attempting doctor login for email: ${dto.email}`);
-    
-    this.logger.debug(`Looking up doctor in database: ${dto.email}`);
+    this.logger.log(`[Auth] Attempting doctor login with email: ${dto.email}`);
     const doctor = await this.doctorRepository.findOne({
       where: { email: dto.email },
     });
     if (!doctor) {
-      this.logger.warn(`Doctor login failed - user not found: ${dto.email}`);
+      this.logger.warn(`[Auth] Doctor not found with email: ${dto.email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
     this.logger.debug(`Comparing password for doctor: ${dto.email}`);
     const match = await bcrypt.compare(dto.password, doctor.password);
     if (!match) {
-      this.logger.warn(`Doctor login failed - invalid password: ${dto.email}`);
+      this.logger.warn(`[Auth] Invalid password for doctor: ${dto.email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -99,27 +93,24 @@ export class AuthService {
       email: doctor.email,
       role: 'doctor',
     });
-    
-    this.logger.log(`Doctor login successful: ${dto.email}`);
+    this.logger.log(`[Auth] Doctor login successful for email: ${dto.email}`);
     return { access_token: token };
   }
 
   async loginPatient(dto: LoginDto) {
-    this.logger.log(`Attempting patient login for email: ${dto.email}`);
-    
-    this.logger.debug(`Looking up patient in database: ${dto.email}`);
+    this.logger.log(`[Auth] Attempting patient login with email: ${dto.email}`);
     const patient = await this.patientRepository.findOne({
       where: { email: dto.email },
     });
     if (!patient) {
-      this.logger.warn(`Patient login failed - user not found: ${dto.email}`);
+      this.logger.warn(`[Auth] Patient not found with email: ${dto.email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
     this.logger.debug(`Comparing password for patient: ${dto.email}`);
     const match = await bcrypt.compare(dto.password, patient.password);
     if (!match) {
-      this.logger.warn(`Patient login failed - invalid password: ${dto.email}`);
+      this.logger.warn(`[Auth] Invalid password for patient: ${dto.email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -129,8 +120,7 @@ export class AuthService {
       email: patient.email,
       role: 'patient',
     });
-    
-    this.logger.log(`Patient login successful: ${dto.email}`);
+    this.logger.log(`[Auth] Patient login successful for email: ${dto.email}`);
     return { access_token: token };
   }
 }
