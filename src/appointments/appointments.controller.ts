@@ -41,6 +41,12 @@ export class AppointmentsController {
     return this.appointmentsService.getNextAvailableDay(+doctorId);
   }
 
+  @Get('my-appointments')
+  async getAppointmentsByMobileNumber(@Query('mobileNumber') mobileNumber: string, @Query('date') date?: string) {
+    this.logger.log(`Received appointments request for mobile number: ${mobileNumber}${date ? ` on date: ${date}` : ''}`);
+    return this.appointmentsService.getAppointmentsByMobileNumber(mobileNumber, date);
+  }
+
   @Post('cancel')
   async cancelAppointment(@Body() dto: CancelAppointmentDto) {
     this.logger.log(`Received appointment cancellation request - ID: ${dto.appointmentId}, Phone: ${dto.patientPhone}, Date: ${dto.appointmentDate}`);

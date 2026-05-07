@@ -1,4 +1,4 @@
-import { IsString, IsEmail } from 'class-validator';
+import { IsString, IsEmail, IsOptional, Matches } from 'class-validator';
 
 export class SignupPatientDto {
   @IsString()
@@ -15,4 +15,9 @@ export class SignupPatientDto {
 
   @IsString()
   password: string;
+
+  @IsString()
+  @IsOptional()
+  @Matches(/^[0-9]{10}$/, { message: 'Mobile number must be 10 digits' })
+  mobile_number?: string;
 }
